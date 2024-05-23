@@ -1,116 +1,111 @@
+#![no_std]
+#![no_main]
+
 use embedded_graphics::{
     geometry::Point,
-    pixelcolor::Rgb565,
-    prelude::*,
+    pixelcolor::{Rgb565, RgbColor},
     primitives::{Circle, Primitive, PrimitiveStyleBuilder},
     Drawable,
 };
-use esp_idf_svc::hal::{
-    delay::{Delay, FreeRtos},
-    gpio::{self, OutputPin, PinDriver},
-    i2c,
+use esp_backtrace as _;
+use esp_hal::{
+    clock::ClockControl,
+    delay::Delay,
+    gpio::{IO, NO_PIN},
+    i2c::I2C,
     peripherals::Peripherals,
     prelude::*,
-    spi::{
-        self,
-        config::{Mode, Phase, Polarity},
-        SpiDeviceDriver,
-    },
+    spi::{self, SpiMode},
+};
+use gc9a01::{
+    display::DisplayResolution240x240, mode::DisplayConfiguration, rotation::DisplayRotation,
+    Gc9a01, SPIDisplayInterface,
 };
 
-use gc9a01::{mode::BufferedGraphics, prelude::*, Gc9a01, SPIDisplayInterface};
+//////////////////// ALLOC //////////
+extern crate alloc;
+use core::mem::MaybeUninit;
 
-type DisplayDriver<'a> = Gc9a01<
-    SPIInterface<
-        SpiDeviceDriver<'a, spi::SpiDriver<'a>>,
-        PinDriver<'a, gpio::AnyOutputPin, gpio::Output>,
-    >,
-    DisplayResolution240x240,
-    BufferedGraphics<DisplayResolution240x240>,
->;
+#[global_allocator]
+static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
 
-fn main() {
-    // It is necessary to call this function once. Otherwise some patches to the runtime
-    // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
-    esp_idf_svc::sys::link_patches();
+fn init_heap() {
+    const HEAP_SIZE: usize = 32 * 1024;
+    static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
 
-    // Bind the log crate to the ESP Logging facilities
-    esp_idf_svc::log::EspLogger::initialize_default();
+    unsafe {
+        ALLOCATOR.init(HEAP.as_mut_ptr() as *mut u8, HEAP_SIZE);
+    }
+}
+///////////////////////////////////
 
-    let peripherals = Peripherals::take().unwrap();
-    let pins = peripherals.pins;
-    let mut delay = Delay::new_default();
+#[entry]
+fn main() -> ! {
+    let ph = Peripherals::take();
+    let system = ph.SYSTEM.split();
 
+    let clocks = ClockControl::max(system.clock_control).freeze();
+    let mut delay = Delay::new(&clocks);
+    init_heap();
+
+    esp_println::logger::init_logger_from_env();
+    log::info!("Logged init'd, Booting...");
+
+    let io = IO::new(ph.GPIO, ph.IO_MUX);
+    let pins = io.pins;
+
+    // gpio pin maps
     let sck = pins.gpio10;
     let mosi = pins.gpio11;
-    let cs = pins.gpio9;
-    let dc = pins.gpio8;
-    let reset = pins.gpio14;
-    let backlight = pins.gpio2;
+    let cs = pins.gpio9.into_push_pull_output();
+    let dc = pins.gpio8.into_push_pull_output();
+    let mut reset = pins.gpio14.into_push_pull_output();
+    let mut backlight = pins.gpio2.into_push_pull_output();
     let i2c_sda = pins.gpio6;
     let i2c_scl = pins.gpio7;
 
-    let cs_output = cs;
-    let dc_output = PinDriver::output(dc.downgrade_output()).unwrap();
-    let mut backlight_output = PinDriver::output(backlight.downgrade_output()).unwrap();
-    let mut reset_output = PinDriver::output(reset.downgrade_output()).unwrap();
+    backlight.set_output_high(true);
+    log::info!("Set backlight high.");
 
-    backlight_output.set_high().unwrap();
+    let i2c = I2C::new(ph.I2C0, i2c_sda, i2c_scl, 1.MHz(), &clocks, None);
 
-    log::info!("Backlight on");
-
-    let i2c =
-        i2c::I2cDriver::new(peripherals.i2c0, i2c_sda, i2c_scl, &i2c::I2cConfig::new()).unwrap();
-
-    let driver = spi::SpiDriver::new(
-        peripherals.spi2,
-        sck,
-        mosi,
-        None::<gpio::AnyIOPin>,
-        &spi::SpiDriverConfig::new(),
-    )
-    .unwrap();
-
-    let config = spi::config::Config::new()
-        .baudrate(2.MHz().into())
-        .data_mode(Mode {
-            polarity: Polarity::IdleLow,
-            phase: Phase::CaptureOnFirstTransition,
-        });
-
-    let spi_device = SpiDeviceDriver::new(driver, Some(cs_output), &config).unwrap();
-
-    let interface = SPIDisplayInterface::new(spi_device, dc_output);
-
-    let mut display_driver: Box<DisplayDriver> = Box::new(
-        Gc9a01::new(
-            interface,
-            DisplayResolution240x240,
-            DisplayRotation::Rotate0,
-        )
-        .into_buffered_graphics(),
+    let spi = spi::master::Spi::new(ph.SPI2, 2.MHz(), SpiMode::Mode0, &clocks).with_pins(
+        Some(sck),
+        Some(mosi),
+        NO_PIN,
+        NO_PIN,
     );
+    let spi_driver = embedded_hal_bus::spi::ExclusiveDevice::new(spi, cs, delay).unwrap();
 
-    display_driver.reset(&mut reset_output, &mut delay).ok();
+    let spi_interface = SPIDisplayInterface::new(spi_driver, dc);
+    let mut display_driver = Gc9a01::new(
+        spi_interface,
+        DisplayResolution240x240,
+        DisplayRotation::Rotate0,
+    )
+    .into_buffered_graphics();
+
+    display_driver.reset(&mut reset, &mut delay).ok();
     display_driver.init(&mut delay).ok();
 
-    log::info!("Driver configured!");
+    log::info!("Display configured!");
 
     let style = PrimitiveStyleBuilder::new()
         .stroke_width(4)
-        .stroke_color(Rgb565::new(80, 80, 180))
+        .stroke_color(Rgb565::new(9, 60, 31))
         .fill_color(Rgb565::BLUE)
         .build();
 
     let mut tick: u32 = 0;
     loop {
+        log::info!("loop");
         display_driver.clear();
-        Circle::new(Point::new(149, 149), 30)
+        Circle::new(Point::new(140, 140), 30)
             .into_styled(style)
-            .draw::<DisplayDriver>(&mut display_driver)
+            .draw(&mut display_driver)
             .unwrap();
         display_driver.flush().ok();
         tick += 1;
-        FreeRtos::delay_ms(2000);
+        delay.delay_millis(2000);
     }
 }
