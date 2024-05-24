@@ -7,6 +7,7 @@ ESP_LOGLEVEL="INFO"
 [build]
 rustflags = [
   "-C", "link-arg=-nostartfiles",
+  "-Z", "stack-protector=all",
 ]
 
 target = "xtensa-esp32s3-none-elf"

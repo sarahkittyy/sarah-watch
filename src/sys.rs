@@ -1,11 +1,16 @@
-use crate::qmi8658::Qmi8568;
+use core::cell::RefCell;
+
+use crate::{qmi8658::Qmi8568, recursive_stack_and_heap_allocation};
+use critical_section::Mutex;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::{
+    assist_debug::DebugAssist,
     clock::{ClockControl, Clocks, CpuClock},
     delay::Delay,
     gpio::{AnyPin, Output, PushPull, IO, NO_PIN},
     i2c::I2C,
-    peripherals::{Peripherals, I2C0, SPI2},
+    interrupt,
+    peripherals::{Interrupt, Peripherals, I2C0, SPI2},
     prelude::*,
     spi::{master::Spi, FullDuplexMode, SpiMode},
     Blocking,
@@ -30,6 +35,7 @@ type DisplayDriver<'d, SPI> = Gc9a01<
 
 /// Wrapper for bare system config
 pub struct Sys<'a> {
+    pub ph: Peripherals,
     pub display: DisplayDriver<'a, SPI2>,
     pub clocks: Clocks<'a>,
     pub gyro: Qmi8568<'a, I2C0>,
@@ -38,10 +44,8 @@ pub struct Sys<'a> {
 impl<'a> Sys<'a> {
     /// Initialize base code
     pub fn init() -> Self {
-        // base init
         let ph = Peripherals::take();
         let system = ph.SYSTEM.split();
-
         let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock240MHz).freeze();
         let mut delay = Delay::new(&clocks);
 
@@ -66,8 +70,6 @@ impl<'a> Sys<'a> {
         // i2c for
         let i2c: I2C<I2C0, Blocking> = I2C::new(ph.I2C0, i2c_sda, i2c_scl, 1.MHz(), &clocks, None);
 
-        log::info!("1");
-
         // screen spi interface initialization
         let spi = Spi::new(ph.SPI2, 30.MHz(), SpiMode::Mode0, &clocks).with_pins(
             Some(sck),
@@ -75,26 +77,21 @@ impl<'a> Sys<'a> {
             NO_PIN,
             NO_PIN,
         );
-        log::info!("1");
         let spi_driver = ExclusiveDevice::new(spi, GenericOutputPin::from(cs), delay).unwrap();
-        log::info!("1");
         let spi_interface = SPIDisplayInterface::new(spi_driver, GenericOutputPin::from(dc));
-        log::info!("1");
         let mut display_driver: DisplayDriver<SPI2> = Gc9a01::new(
             spi_interface,
             DisplayResolution240x240,
             DisplayRotation::Rotate180,
         )
         .into_buffered_graphics();
-        log::info!("1");
 
         display_driver.reset(&mut reset, &mut delay).ok();
-        log::info!("1");
         display_driver.init(&mut delay).ok();
 
         log::info!("Display configured");
 
-        // wifi
+        /*// wifi
         let timer = esp_hal::timer::TimerGroup::new(ph.TIMG1, &clocks, None).timer0;
         let _init = esp_wifi::initialize(
             esp_wifi::EspWifiInitFor::Wifi,
@@ -103,11 +100,12 @@ impl<'a> Sys<'a> {
             system.radio_clock_control,
             &clocks,
         )
-        .unwrap();
+        .unwrap();*/
 
         log::info!("Wifi initialized");
 
         Sys {
+            ph,
             display: display_driver,
             clocks,
             gyro: Qmi8568::init(i2c),

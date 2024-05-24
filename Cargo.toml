@@ -41,6 +41,7 @@ embedded-graphics = "0.8.1"
 embedded-hal = "1.0.0"
 embedded-hal-bus = "0.2.0"
 micromath = "2.1.0"
+critical-section = "1.1.2"
 
 [profile.release]
 codegen-units = 1
