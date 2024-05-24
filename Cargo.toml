@@ -53,4 +53,10 @@ overflow-checks = false
 
 [profile.dev]
 debug = true    # Symbols are nice and they don't increase the size on Flash
-opt-level = "z"
+opt-level = 's'
+
+[profile.dev.package.esp-wifi]
+opt-level = 3
+
+[profile.release.package.esp-wifi]
+opt-level = 3
