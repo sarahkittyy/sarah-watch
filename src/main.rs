@@ -10,20 +10,11 @@ use embedded_graphics::{
     Drawable,
 };
 use esp_backtrace as _;
-use esp_hal::{
-    clock::ClockControl,
-    delay::Delay,
-    gpio::{IO, NO_PIN},
-    i2c::I2C,
-    peripherals::Peripherals,
-    prelude::*,
-    spi::{self, SpiMode},
-};
-use gc9a01::{
-    display::DisplayResolution240x240, mode::DisplayConfiguration, rotation::DisplayRotation,
-    Gc9a01, SPIDisplayInterface,
-};
+use esp_hal::prelude::*;
 use micromath::F32Ext;
+
+pub mod qmi8658;
+pub mod sys;
 
 //////////////////// ALLOC //////////
 use core::mem::MaybeUninit;
@@ -43,71 +34,9 @@ fn init_heap() {
 
 #[entry]
 fn main() -> ! {
-    // base init
-    let ph = Peripherals::take();
-    let system = ph.SYSTEM.split();
-
-    let clocks = ClockControl::max(system.clock_control).freeze();
-    let mut delay = Delay::new(&clocks);
     init_heap();
-
     esp_println::logger::init_logger_from_env();
-    log::info!("Logged init'd, Booting...");
-
-    // gpio pin io initialization
-    let io = IO::new(ph.GPIO, ph.IO_MUX);
-    let pins = io.pins;
-
-    // gpio pin maps
-    let sck = pins.gpio10;
-    let mosi = pins.gpio11;
-    let cs = pins.gpio9.into_push_pull_output();
-    let dc = pins.gpio8.into_push_pull_output();
-    let mut reset = pins.gpio14.into_push_pull_output();
-    let mut backlight = pins.gpio2.into_push_pull_output();
-    let i2c_sda = pins.gpio6;
-    let i2c_scl = pins.gpio7;
-
-    // backlight init
-    backlight.set_output_high(true);
-    log::info!("Set backlight high");
-
-    // i2c for
-    let i2c = I2C::new(ph.I2C0, i2c_sda, i2c_scl, 1.MHz(), &clocks, None);
-
-    // screen spi interface initialization
-    let spi = spi::master::Spi::new(ph.SPI2, 2.MHz(), SpiMode::Mode0, &clocks).with_pins(
-        Some(sck),
-        Some(mosi),
-        NO_PIN,
-        NO_PIN,
-    );
-    let spi_driver = embedded_hal_bus::spi::ExclusiveDevice::new(spi, cs, delay).unwrap();
-    let spi_interface = SPIDisplayInterface::new(spi_driver, dc);
-    let mut display_driver = Gc9a01::new(
-        spi_interface,
-        DisplayResolution240x240,
-        DisplayRotation::Rotate180,
-    )
-    .into_buffered_graphics();
-
-    display_driver.reset(&mut reset, &mut delay).ok();
-    display_driver.init(&mut delay).ok();
-
-    log::info!("Display configured");
-
-    // wifi
-    let timer = esp_hal::timer::TimerGroup::new(ph.TIMG1, &clocks, None).timer0;
-    let _init = esp_wifi::initialize(
-        esp_wifi::EspWifiInitFor::Wifi,
-        timer,
-        esp_hal::rng::Rng::new(ph.RNG),
-        system.radio_clock_control,
-        &clocks,
-    )
-    .unwrap();
-
-    log::info!("Wifi initialized");
+    let mut sys = sys::Sys::init();
 
     // main code loop
     let style = PrimitiveStyleBuilder::new()
@@ -122,12 +51,12 @@ fn main() -> ! {
 
     let mut tick: u32 = 0;
     loop {
-        display_driver.clear();
+        sys.display.clear();
 
         text.position.x = 120 + (30f32 * (tick as f32 / 10f32).sin()) as i32;
-        text.draw(&mut display_driver).unwrap();
-        circle.draw(&mut display_driver).unwrap();
-        display_driver.flush().ok();
+        text.draw(&mut sys.display).unwrap();
+        circle.draw(&mut sys.display).unwrap();
+        sys.display.flush().ok();
         tick += 1;
     }
 }
