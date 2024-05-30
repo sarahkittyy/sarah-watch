@@ -2,6 +2,8 @@
 #![no_main]
 
 use alloc::format;
+use critical_section::Mutex;
+use cst816s::Cst816s;
 use embedded_graphics::{
     geometry::Point,
     mono_font::{iso_8859_15::FONT_10X20, MonoTextStyle},
@@ -13,15 +15,12 @@ use embedded_graphics::{
 use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_backtrace as _;
 use esp_hal::{
-    analog::adc::{Adc, AdcConfig, Attenuation},
     delay::Delay,
-    gpio::{GpioPin, Output, NO_PIN},
+    gpio::{Event, GpioPin, Output, NO_PIN},
     i2c::I2C,
-    peripherals::{I2C0, SPI2},
+    peripherals::{I2C1, SPI2},
     prelude::*,
     spi::{master::Spi, FullDuplexMode, SpiMode},
-    time,
-    timer::timg::TimerGroup,
     Blocking,
 };
 use gc9a01::{
@@ -32,13 +31,15 @@ use gc9a01::{
     Gc9a01, SPIDisplayInterface,
 };
 use micromath::F32Ext;
+use sys::Battery;
 
+pub mod cst816s;
 pub mod qmi8658;
 pub mod sys;
 
 //////////////////// ALLOC //////////
 extern crate alloc;
-use core::{mem::MaybeUninit, ptr::addr_of_mut};
+use core::{cell::RefCell, mem::MaybeUninit, ptr::addr_of_mut};
 
 #[global_allocator]
 static ALLOCATOR: esp_alloc::EspHeap = esp_alloc::EspHeap::empty();
@@ -75,6 +76,28 @@ type DisplayDriver<'d, SPI> = Gc9a01<
     BufferedGraphics<DisplayResolution240x240>,
 >;
 
+pub static P_I2C1: Mutex<RefCell<Option<I2C<'static, I2C1, Blocking>>>> =
+    Mutex::new(RefCell::new(None));
+pub static P_TOUCH: Mutex<RefCell<Option<Cst816s<'static>>>> = Mutex::new(RefCell::new(None));
+
+pub fn with<G, R>(peripheral: &Mutex<RefCell<Option<G>>>, f: impl FnOnce(&mut G) -> R) -> R {
+    critical_section::with(|cs| {
+        f(unsafe { peripheral.borrow_ref_mut(cs).as_mut().unwrap_unchecked() })
+    })
+}
+
+#[handler]
+#[ram]
+pub fn gpio_interrupt_handler() {
+    critical_section::with(|cs| {
+        P_TOUCH
+            .borrow_ref_mut(cs)
+            .as_mut()
+            .unwrap()
+            .handle_interrupt();
+    });
+}
+
 #[entry]
 fn main() -> ! {
     init_heap();
@@ -96,15 +119,30 @@ fn main() -> ! {
     board.backlight.set_high();
     log::info!("Set backlight high");
 
-    // i2c for
-    let i2c: I2C<I2C0, Blocking> = I2C::new(
-        board.i2c0,
+    // configure i2c0
+    let i2c: I2C<I2C1, Blocking> = I2C::new(
+        board.i2c1,
         board.i2c_sda,
         board.i2c_scl,
-        1.MHz(),
+        100.kHz(),
         &board.clocks,
         None,
     );
+    critical_section::with(|cs| {
+        // store i2c0 as global
+        P_I2C1.borrow_ref_mut(cs).replace(i2c);
+        // configure touch screen interrupt pin
+        board.touch_int.listen(Event::FallingEdge);
+        // init touch screen
+        let mut touch = Cst816s::new(
+            board.touch_reset,
+            board.touch_int,
+            cst816s::TouchMode::Change,
+        );
+        touch.begin(&delay);
+        log::info!("Touch Screen {:?}", touch.read_version().unwrap());
+        P_TOUCH.borrow_ref_mut(cs).replace(touch);
+    });
 
     // screen spi interface initialization
     let spi = Spi::new(board.spi2, 40.MHz(), SpiMode::Mode0, &board.clocks).with_pins(
@@ -122,12 +160,12 @@ fn main() -> ! {
     )
     .into_buffered_graphics();
 
-    display.reset(&mut board.reset, &mut delay).ok();
+    display.reset(&mut board.led_reset, &mut delay).ok();
     display.init(&mut delay).ok();
 
     log::info!("Display configured");
 
-    let timer = TimerGroup::new(board.timg1, &board.clocks, None);
+    /*let timer = TimerGroup::new(board.timg1, &board.clocks, None);
     let wifi = esp_wifi::initialize(
         esp_wifi::EspWifiInitFor::Wifi,
         timer.timer0,
@@ -137,12 +175,9 @@ fn main() -> ! {
     )
     .unwrap();
 
-    log::info!("Wifi initialized");
+    log::info!("Wifi initialized");*/
 
-    // battery adc
-    let mut adc1_config = AdcConfig::new();
-    let mut adc1_pin = adc1_config.enable_pin(board.bat, Attenuation::Attenuation11dB);
-    let mut adc1 = Adc::new(board.adc1, adc1_config);
+    let mut battery = Battery::new(board.bat, board.adc1);
 
     // main code loop
     let style = PrimitiveStyleBuilder::new()
@@ -152,7 +187,8 @@ fn main() -> ! {
         .build();
     let text_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
 
-    let circle = Circle::new(Point::new(120 - 15, 120 - 15), 30).into_styled(style);
+    let mut pos = Point::new(120, 120);
+    let mut circle = Circle::new(pos, 30).into_styled(style);
 
     let mut tick: u32 = 0;
     loop {
@@ -161,11 +197,9 @@ fn main() -> ! {
         // update
         let x = 90 + (30f32 * (tick as f32 / 10f32).sin()) as i32;
         let text = Text::new("hiii <3", Point::new(x, 30), text_style);
-        let t = format!(
-            "bat: {}",
-            nb::block!(adc1.read_oneshot(&mut adc1_pin)).unwrap()
-        );
+        let t = format!("bat: {:.2}", battery.get_voltage());
         let text2 = Text::new(&t, Point::new(120, 190), text_style);
+        circle.primitive.top_left = pos - Point::new_equal(15);
 
         // draw
         text.draw(&mut display).unwrap();
@@ -175,6 +209,11 @@ fn main() -> ! {
         display.flush().ok();
 
         tick += 1;
+
+        if let Some(data) = with(&P_TOUCH, Cst816s::poll) {
+            pos.x = data.x.into();
+            pos.y = data.y.into();
+        }
 
         delay.delay_millis(10);
     }
