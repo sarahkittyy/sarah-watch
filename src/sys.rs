@@ -64,7 +64,7 @@ impl<'d> Board<'d> {
             cs: Output::new(pins.gpio9, Level::Low),
             dc: Output::new(pins.gpio8, Level::Low),
             touch_int: Input::new(pins.gpio5, Pull::Up),
-            touch_reset: Output::new(pins.gpio13, Level::Low),
+            touch_reset: Output::new(pins.gpio13, Level::High),
             led_reset: Output::new(pins.gpio14, Level::Low),
             backlight: Output::new(pins.gpio2, Level::Low),
             i2c0: ph.I2C0,

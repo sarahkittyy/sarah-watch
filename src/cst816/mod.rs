@@ -1,4 +1,4 @@
-use core::mem;
+use core::{fmt::Debug, mem};
 
 use esp_hal::{delay::Delay, i2c};
 
@@ -7,7 +7,7 @@ use crate::{
     with, P_I2C1,
 };
 
-const CST816S_ADDRESS: u8 = 0x15;
+const CST816_ADDRESS: u8 = 0x15;
 const REG_VERSION: u8 = 0xA7;
 const REG_INT_CONTROL: u8 = 0xFA;
 const REG_MOTION_MASK: u8 = 0xEC;
@@ -51,6 +51,29 @@ impl TryFrom<u8> for Gesture {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(u8)]
+pub enum DeviceType {
+    #[default]
+    Unknown,
+    Cst716 = 0x20,
+    Cst816S = 0xB4,
+    Cst816T = 0xB5,
+    Cst816D = 0xB6,
+}
+
+impl From<u8> for DeviceType {
+    fn from(value: u8) -> Self {
+        match value {
+            0x20 => Self::Cst716,
+            0xB4 => Self::Cst816S,
+            0xB5 => Self::Cst816T,
+            0xB6 => Self::Cst816D,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Default)]
 pub enum TouchMode {
     #[default]
@@ -87,9 +110,9 @@ pub enum TouchEvent {
     Contact = 0x02,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default, Debug)]
 pub struct VersionInfo {
-    pub chip_id: u8,
+    pub chip_id: DeviceType,
     pub proj_id: u8,
     pub fw_version: u8,
     pub factory_id: u8,
@@ -117,7 +140,7 @@ impl Default for TouchData {
 }
 
 /// Cst816s lcd touch screen driver
-pub struct Cst816s<'d> {
+pub struct Cst816<'d> {
     int: TouchInterruptPin<'d>,
     reset: TouchResetPin<'d>,
     has_event: bool,
@@ -125,7 +148,7 @@ pub struct Cst816s<'d> {
     mode: TouchMode,
 }
 
-impl<'d> Cst816s<'d> {
+impl<'d> Cst816<'d> {
     pub fn new(reset: TouchResetPin<'d>, int: TouchInterruptPin<'d>, mode: TouchMode) -> Self {
         Self {
             reset,
@@ -148,7 +171,7 @@ impl<'d> Cst816s<'d> {
     pub fn read_version(&self) -> Result<VersionInfo, i2c::Error> {
         let mut version = [0u8; 4];
         with(&P_I2C1, |i2c| {
-            i2c.write_read(CST816S_ADDRESS, &[REG_VERSION], &mut version)?;
+            i2c.write_read(CST816_ADDRESS, &[REG_VERSION], &mut version)?;
             Ok(unsafe { mem::transmute(version) })
         })
     }
@@ -156,7 +179,7 @@ impl<'d> Cst816s<'d> {
     fn read_touch(&self) -> Result<TouchData, i2c::Error> {
         let mut buf = [0u8; 6];
         with(&P_I2C1, |i2c| {
-            i2c.write_read(CST816S_ADDRESS, &[0x01], &mut buf)?;
+            i2c.write_read(CST816_ADDRESS, &[0x01], &mut buf)?;
 
             Ok(TouchData {
                 gesture: buf[0].try_into().unwrap(),
@@ -171,22 +194,25 @@ impl<'d> Cst816s<'d> {
     pub fn handle_interrupt(&mut self) {
         self.has_event = true;
         self.data = self.read_touch().unwrap();
+        log::info!("Got Touch: {:?}", self.data);
         self.int.clear_interrupt();
     }
 
-    pub fn begin(&mut self, delay: &Delay) {
-        self.reset.set_high();
-        delay.delay_millis(100);
+    pub fn reset(&mut self, delay: &Delay) {
         self.reset.set_low();
         delay.delay_millis(20);
         self.reset.set_high();
         delay.delay_millis(100);
+    }
+
+    pub fn begin(&mut self, delay: &Delay) {
+        self.reset(delay);
         // write the touch mode
         with(&P_I2C1, |i2c| -> Result<_, _> {
-            i2c.write(CST816S_ADDRESS, &[REG_INT_CONTROL])?;
-            i2c.write(CST816S_ADDRESS, &[self.mode.int_control_byte()])?;
-            i2c.write(CST816S_ADDRESS, &[REG_MOTION_MASK])?;
-            i2c.write(CST816S_ADDRESS, &[self.mode.motion_mask_byte()])
+            i2c.write(CST816_ADDRESS, &[REG_INT_CONTROL])?;
+            i2c.write(CST816_ADDRESS, &[self.mode.int_control_byte()])?;
+            i2c.write(CST816_ADDRESS, &[REG_MOTION_MASK])?;
+            i2c.write(CST816_ADDRESS, &[self.mode.motion_mask_byte()])
         })
         .expect("Could not write mode to i2c");
     }

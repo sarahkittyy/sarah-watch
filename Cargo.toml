@@ -13,19 +13,19 @@ esp-alloc = { git = "https://github.com/esp-rs/esp-hal" }
 esp-backtrace = { git = "https://github.com/esp-rs/esp-hal" }
 
 [dependencies]
-esp-backtrace = { version = "0.11.0", features = [
+esp-backtrace = { version = "0.12.1", features = [
     "esp32s3",
     "exception-handler",
     "panic-handler",
     "println",
 ] }
-esp-hal = { version = "0.17.0", features = [ "esp32s3" ] }
+esp-hal = { version = "0.18.0", features = [ "esp32s3" ] }
 esp-println = { version = "0.9.0", features = ["esp32s3", "log"] }
 log = { version = "0.4.20" }
-esp-alloc = { version = "0.3.0" }
+esp-alloc = { version = "0.4.0" }
 embedded-svc = { version = "0.26.1", default-features = false, features = [] }
 embedded-io = "0.6.1"
-esp-wifi = { version = "0.5.1", features = [
+esp-wifi = { version = "0.6.0", features = [
     "esp32s3",
     "wifi",
     "log"

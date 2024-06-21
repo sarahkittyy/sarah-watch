@@ -3,7 +3,7 @@
 
 use alloc::format;
 use critical_section::Mutex;
-use cst816s::Cst816s;
+use cst816::Cst816;
 use embedded_graphics::{
     geometry::Point,
     mono_font::{iso_8859_15::FONT_10X20, MonoTextStyle},
@@ -33,7 +33,7 @@ use gc9a01::{
 use micromath::F32Ext;
 use sys::Battery;
 
-pub mod cst816s;
+pub mod cst816;
 pub mod qmi8658;
 pub mod sys;
 
@@ -78,7 +78,7 @@ type DisplayDriver<'d, SPI> = Gc9a01<
 
 pub static P_I2C1: Mutex<RefCell<Option<I2C<'static, I2C1, Blocking>>>> =
     Mutex::new(RefCell::new(None));
-pub static P_TOUCH: Mutex<RefCell<Option<Cst816s<'static>>>> = Mutex::new(RefCell::new(None));
+pub static P_TOUCH: Mutex<RefCell<Option<Cst816<'static>>>> = Mutex::new(RefCell::new(None));
 
 pub fn with<G, R>(peripheral: &Mutex<RefCell<Option<G>>>, f: impl FnOnce(&mut G) -> R) -> R {
     critical_section::with(|cs| {
@@ -134,10 +134,10 @@ fn main() -> ! {
         // configure touch screen interrupt pin
         board.touch_int.listen(Event::FallingEdge);
         // init touch screen
-        let mut touch = Cst816s::new(
+        let mut touch = Cst816::new(
             board.touch_reset,
             board.touch_int,
-            cst816s::TouchMode::Change,
+            cst816::TouchMode::Change,
         );
         touch.begin(&delay);
         log::info!("Touch Screen {:?}", touch.read_version().unwrap());
@@ -210,7 +210,7 @@ fn main() -> ! {
 
         tick += 1;
 
-        if let Some(data) = with(&P_TOUCH, Cst816s::poll) {
+        if let Some(data) = with(&P_TOUCH, Cst816::poll) {
             pos.x = data.x.into();
             pos.y = data.y.into();
         }
